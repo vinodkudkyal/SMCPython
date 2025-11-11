@@ -3,11 +3,13 @@ services:
     name: faceapi-service
     env: python
     plan: free
-    buildCommand: pip install -r requirements.txt
+    buildCommand: |
+      pip install --upgrade pip setuptools wheel
+      pip install -r requirements.txt
     startCommand: python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
       - key: MONGO_URI
-        value: "<your-mongo-uri>"
+        value: "<your-mongo-uri-if-needed>"
     healthCheckPath: /health

@@ -19,6 +19,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app = FastAPI(title="Face API", version="1.0.0", redirect_slashes=True)
+
+
 service = FaceService(threshold=0.6)
 
 @app.get("/health")

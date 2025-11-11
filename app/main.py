@@ -10,6 +10,7 @@ from .face_service import FaceService
 
 app = FastAPI(title="Face API", version="1.0.0")
 
+app = FastAPI(title="Face API", version="1.0.0", redirect_slashes=True)
 # CORS: allow mobile/web clients
 app.add_middleware(
     CORSMiddleware,
@@ -19,7 +20,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app = FastAPI(title="Face API", version="1.0.0", redirect_slashes=True)
 
 
 service = FaceService(threshold=0.6)

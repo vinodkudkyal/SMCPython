@@ -6,6 +6,8 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
       - key: MONGO_URI
-        value: "<your-mongo-uri-if-you-want-to-use-env>"
+        value: "<your-mongo-uri>"
     healthCheckPath: /health

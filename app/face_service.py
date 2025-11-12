@@ -17,7 +17,7 @@ def normalize_embeddings(emb: np.ndarray) -> np.ndarray:
     return emb / norms
 
 class FaceService:
-    def __init__(self, threshold: float = 0.6):
+    def __init__(self, threshold: float = 0.7):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.mtcnn = MTCNN(keep_all=True, image_size=160, margin=20, device=self.device)
         self.resnet = InceptionResnetV1(pretrained="vggface2").eval().to(self.device)

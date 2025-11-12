@@ -1,5 +1,6 @@
 import io
 import os
+import threading
 from typing import List, Optional
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
@@ -19,11 +20,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-service = FaceService(threshold=0.7)
+# Defer creating the heavy FaceService until first request (lazy instantiation)
+_service_lock = threading.Lock()
+_service: Optional[FaceService] = None
+
+
+def get_service() -> FaceService:
+    global _service
+    if _service is None:
+        with _service_lock:
+            if _service is None:
+                # Create the service lazily; models inside FaceService are also lazy-loaded
+                _service = FaceService(threshold=0.7)
+    return _service
 
 
 @app.get("/health")
 def health():
+    # Keep health cheap (don't create models)
     return {"ok": True}
 
 
@@ -46,6 +60,7 @@ async def register(
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Error reading image {uf.filename}: {e}")
 
+    service = get_service()
     res = service.register(sweeperId=sweeperId, name=name, images=pil_images)
     return res
 
@@ -63,5 +78,6 @@ async def recognize(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error reading image {image.filename}: {e}")
 
+    service = get_service()
     res = service.recognize(img, sweeperId=sweeperId)
     return res

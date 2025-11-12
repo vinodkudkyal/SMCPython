@@ -24,16 +24,71 @@ def normalize_embeddings(emb: np.ndarray) -> np.ndarray:
 
 
 class FaceService:
-    def __init__(self, threshold: float = 0.7):
+    """
+    Lazy-load models to reduce memory footprint at startup.
+    Reduced MTCNN image_size and keep_all to lower runtime allocations.
+    Limit torch threads to reduce memory/CPU pressure.
+    """
+    def __init__(self, threshold: float = 0.7, image_size: int = 112, margin: int = 10, keep_all: bool = False):
+        # Limit torch threads early to reduce memory/CPU usage
+        try:
+            torch.set_num_threads(1)
+        except Exception:
+            # set_num_threads may not be available in some environments, ignore if it fails
+            pass
+
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.mtcnn = MTCNN(keep_all=True, image_size=160, margin=20, device=self.device)
-        self.resnet = InceptionResnetV1(pretrained="vggface2").eval().to(self.device)
+
+        # Model parameters (used when we actually create models)
+        self._mtcnn_image_size = image_size
+        self._mtcnn_margin = margin
+        self._mtcnn_keep_all = keep_all
+
+        # Models will be created lazily on first use
+        self.mtcnn: Optional[MTCNN] = None
+        self.resnet: Optional[InceptionResnetV1] = None
+        self._models_loaded = False
+
         self.threshold = threshold
         self._lock = threading.Lock()
 
+    def _load_models(self):
+        """
+        Thread-safe lazy model loader. Called on first embedding/recognition request.
+        """
+        if self._models_loaded:
+            return
+
+        with self._lock:
+            if self._models_loaded:
+                return
+            try:
+                logger.info("Loading MTCNN and InceptionResnetV1 models (lazy load)...")
+                # Use smaller image size and keep_all=False to reduce memory usage
+                self.mtcnn = MTCNN(
+                    keep_all=self._mtcnn_keep_all,
+                    image_size=self._mtcnn_image_size,
+                    margin=self._mtcnn_margin,
+                    device=self.device,
+                )
+                # load pretrained resnet; keep on eval mode
+                self.resnet = InceptionResnetV1(pretrained="vggface2").eval().to(self.device)
+                self._models_loaded = True
+                logger.info("Models loaded.")
+            except Exception as e:
+                logger.exception("Failed to load models: %s", e)
+                # Ensure flags reflect failure so next call can retry
+                self._models_loaded = False
+                raise
+
     def _embed(self, pil_img: Image.Image) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         try:
+            # Ensure models are loaded on first embed call
+            if not self._models_loaded or self.mtcnn is None or self.resnet is None:
+                self._load_models()
+
             pil_img = to_rgb_pil(pil_img)
+            # MTCNN forward for face tensors
             faces = self.mtcnn(pil_img)  # [N,3,160,160] or None
             boxes, _ = self.mtcnn.detect(pil_img)  # [N,4] or None
             if faces is None or boxes is None:

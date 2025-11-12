@@ -127,119 +127,92 @@
 #             "best": {"identity": identity, "confidence": max_sim}
 #         }
 
-import os
-import threading
+import cv2
 import numpy as np
-import torch
+import face_recognition
+import os
+from io import BytesIO
 from PIL import Image
-from facenet_pytorch import MTCNN, InceptionResnetV1
-from torchvision import transforms
-from sklearn.metrics.pairwise import cosine_similarity
 
-
-# ---------------- Utility: Convert image to RGB safely ---------------- #
-def to_rgb_pil(pil_img):
-    """Ensure image is RGB mode before processing."""
-    if pil_img.mode != "RGB":
-        pil_img = pil_img.convert("RGB")
-    return pil_img
-
-
-# ---------------- Core Face Service ---------------- #
 class FaceService:
-    """
-    Face recognition service with lazy-loaded models for memory efficiency.
-    """
+    def __init__(self, base_dir="faces"):
+        self.base_dir = base_dir
+        os.makedirs(self.base_dir, exist_ok=True)
+        self.known_encodings = []
+        self.known_ids = []
+        self.load_known_faces()
 
-    def __init__(self, threshold: float = 0.6):
-        self.device = "cpu"  # Force CPU on Render (no GPU)
-        self.mtcnn = None
-        self.resnet = None
-        self.threshold = threshold
-        self._lock = threading.Lock()
-        print("[INIT] FaceService initialized (models lazy-loaded).")
+    def load_known_faces(self):
+        """Loads all saved faces into memory."""
+        self.known_encodings = []
+        self.known_ids = []
 
-    # ---------------- Lazy load models only when needed ---------------- #
-    def _load_models(self):
-        """Load models only when required."""
-        if self.mtcnn is None or self.resnet is None:
-            print("[MODEL] Loading MTCNN and ResNet models...")
-            self.mtcnn = MTCNN(keep_all=True, image_size=160, margin=20, device=self.device)
-            self.resnet = InceptionResnetV1(pretrained="vggface2").eval().to(self.device)
-            print("[MODEL] Models loaded successfully.")
+        for user_id in os.listdir(self.base_dir):
+            user_folder = os.path.join(self.base_dir, user_id)
+            if not os.path.isdir(user_folder):
+                continue
 
-    # ---------------- Extract Embeddings ---------------- #
-    def _embed(self, pil_img: Image.Image):
-        """Detect faces and return their embeddings."""
-        self._load_models()
-        pil_img = to_rgb_pil(pil_img)
-        faces = self.mtcnn(pil_img)
-        boxes, _ = self.mtcnn.detect(pil_img)
+            for img_name in os.listdir(user_folder):
+                path = os.path.join(user_folder, img_name)
+                try:
+                    img = face_recognition.load_image_file(path)
+                    encodings = face_recognition.face_encodings(img)
+                    if encodings:
+                        self.known_encodings.append(encodings[0])
+                        self.known_ids.append(user_id)
+                except Exception as e:
+                    print(f"Error loading {path}: {e}")
 
-        if faces is None or boxes is None:
-            print("[EMBED] No face detected.")
-            return None, None
+        print(f"Loaded {len(self.known_encodings)} known faces.")
 
-        with torch.no_grad():
-            embeddings = self.resnet(faces.to(self.device)).cpu().numpy().astype(np.float32)
-
-        print(f"[EMBED] Generated embeddings for {len(embeddings)} faces.")
-        return boxes, embeddings
-
-    # ---------------- Register a new face ---------------- #
-    def register_face(self, image_path: str):
-        """Register a new face and store its embedding."""
+    def register_face(self, image_bytes: bytes, sweeperId: str):
+        """Registers a new sweeper's face."""
         try:
-            pil_img = Image.open(image_path)
+            img = Image.open(BytesIO(image_bytes)).convert("RGB")
+            img_np = np.array(img)
+            encodings = face_recognition.face_encodings(img_np)
+            if not encodings:
+                return {"status": "failed", "message": "No face detected."}
+
+            user_folder = os.path.join(self.base_dir, str(sweeperId))
+            os.makedirs(user_folder, exist_ok=True)
+            img_path = os.path.join(user_folder, f"{len(os.listdir(user_folder))}.jpg")
+            img.save(img_path)
+
+            self.known_encodings.append(encodings[0])
+            self.known_ids.append(str(sweeperId))
+
+            return {"status": "success", "message": "Face registered successfully."}
+
         except Exception as e:
-            print(f"[ERROR] Failed to open image: {e}")
-            return None
+            return {"status": "failed", "message": str(e)}
 
-        _, embedding = self._embed(pil_img)
-        if embedding is None:
-            return None
-
-        embedding = embedding[0]
-        print("[REGISTER] Face registered successfully.")
-        return embedding
-
-    # ---------------- Compare embeddings ---------------- #
-    def recognize_face(self, registered_embeddings: list, test_image_path: str):
-        """
-        Compare the test image with registered embeddings and return the most similar match.
-        """
+    def recognize(self, image_bytes: bytes, sweeperId: str = None):
+        """Recognizes the sweeper's face from an image."""
         try:
-            pil_img = Image.open(test_image_path)
+            if not self.known_encodings:
+                self.load_known_faces()
+
+            img = Image.open(BytesIO(image_bytes)).convert("RGB")
+            img_np = np.array(img)
+
+            face_locations = face_recognition.face_locations(img_np)
+            encodings = face_recognition.face_encodings(img_np, face_locations)
+
+            if not encodings:
+                return {"status": "failed", "message": "No face detected."}
+
+            for face_encoding in encodings:
+                matches = face_recognition.compare_faces(self.known_encodings, face_encoding, tolerance=0.5)
+                face_distances = face_recognition.face_distance(self.known_encodings, face_encoding)
+
+                best_match_index = np.argmin(face_distances) if len(face_distances) > 0 else None
+
+                if best_match_index is not None and matches[best_match_index]:
+                    matched_id = self.known_ids[best_match_index]
+                    return {"status": "success", "matchedId": matched_id}
+
+            return {"status": "failed", "message": "No match found."}
+
         except Exception as e:
-            print(f"[ERROR] Failed to open image: {e}")
-            return None, 0.0
-
-        _, test_emb = self._embed(pil_img)
-        if test_emb is None:
-            return None, 0.0
-
-        test_emb = test_emb[0]
-        similarities = cosine_similarity([test_emb], registered_embeddings)[0]
-        best_match_index = int(np.argmax(similarities))
-        best_score = similarities[best_match_index]
-
-        print(f"[RECOGNIZE] Best match score: {best_score:.3f}")
-        if best_score >= self.threshold:
-            print("[RECOGNIZE] Face recognized successfully.")
-            return best_match_index, float(best_score)
-        else:
-            print("[RECOGNIZE] No matching face found.")
-            return None, float(best_score)
-
-    # ---------------- Optional: Release Models (For Low Memory Plans) ---------------- #
-    def unload_models(self):
-        """Manually release model memory (for free Render plans)."""
-        try:
-            del self.mtcnn
-            del self.resnet
-            self.mtcnn = None
-            self.resnet = None
-            torch.cuda.empty_cache()
-            print("[CLEANUP] Models unloaded and memory cleared.")
-        except Exception as e:
-            print(f"[CLEANUP ERROR] {e}")
+            return {"status": "error", "message": str(e)}

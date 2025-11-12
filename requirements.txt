@@ -7,3 +7,4 @@ torchvision==0.17.2
 facenet-pytorch==2.6.0
 pymongo==4.8.0
 python-multipart==0.0.9
+scikit-learn==1.5.2
